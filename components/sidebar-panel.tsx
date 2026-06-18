@@ -263,6 +263,31 @@ export function SidebarPanel({
             )}
           </button>
         ))}
+        <a
+          href="/admin"
+          style={{
+            padding: "10px 8px",
+            background: "transparent",
+            borderBottom: "2px solid transparent",
+            color: "#22d3ee",
+            fontFamily: "monospace",
+            fontSize: 10,
+            fontWeight: 400,
+            cursor: "pointer",
+            textDecoration: "none",
+            textTransform: "uppercase",
+            letterSpacing: 0.5,
+            display: "flex",
+            alignItems: "center",
+            whiteSpace: "nowrap",
+            transition: "color 0.15s",
+            flexShrink: 0,
+          }}
+          onMouseEnter={e => (e.currentTarget.style.color = "#67e8f9")}
+          onMouseLeave={e => (e.currentTarget.style.color = "#22d3ee")}
+        >
+          Admin ↗
+        </a>
       </div>
 
       {/* Tab content */}
