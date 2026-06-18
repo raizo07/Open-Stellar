@@ -1,243 +1,266 @@
 # Open Stellar
 
-Plataforma multi-chain con frontend v0 integrado, wallets Web3 conectadas con wagmi + WalletConnect + viem, flujo Stellar/Freighter, contratos de escrow, y capa de protocolos para x402 y track 8004 (con fallback de reputacion en Stellar).
+Plataforma de infraestructura de pagos para agentes de IA, construida sobre Stellar y compatibilidad EVM. Implementa los protocolos x402 (HTTP payment gate), ZK Agent Passport (Groth16 sobre Soroban), track 8004 con fallback de reputación, y un admin console multi-tab para operar y vender el stack como servicio.
 
-## Estado actual
+[![Deploy to Vercel](https://vercel.com/button)](https://vercel.com/new/clone?repository-url=https%3A%2F%2Fgithub.com%2Fleocagli%2FOpen-Stellar&project-name=open-stellar&repository-name=open-stellar)
 
-- Frontend integrado (Open-Stellar v0)
-- Conectividad Web3:
-  - BNB: MetaMask (injected) + WalletConnect (QR)
-  - Stellar: Freighter
-- Transacciones:
-  - BNB nativa en testnet
-  - XLM en Stellar testnet
-- Protocolos:
-  - x402 implementado en capa API y utilidades
-  - track 8004 con deteccion y fallback a reputacion en Stellar
-- Contratos:
-  - EscrowMilestone.sol
-  - X402ServicePaywall.sol
-  - Base escrow Soroban (Rust)
+---
 
-## Integracion Frontend + Web3 + Agentes
+## Stack
 
-### 1. Frontend v0 integrado
+| Capa | Tecnología |
+|------|------------|
+| Framework | Next.js 16 (modo webpack — requerido por snarkjs) |
+| UI | React 19, Tailwind v4, Radix UI, Framer Motion |
+| Stellar | @stellar/stellar-sdk v16, @stellar/freighter-api, Soroban RPC |
+| ZK | snarkjs 0.7.6, Groth16/BN254, circom (WASM artifacts) |
+| EVM | wagmi, viem, WalletConnect |
+| Deploy | Vercel (Next.js, auto-detect) |
 
-Archivo principal de entrada:
+---
 
-- app/page.tsx
+## Arquitectura
 
-Componente de integracion:
+```
+Browser
+  ├─ Wallet (MetaMask / WalletConnect / Freighter)
+  ├─ Admin Console
+  │    ├─ Tab: Orchestration Overview  (métricas, squads, suscripciones)
+  │    ├─ Tab: Agent Passport (ZK)     (mint, verify, x402 gate, replay demo)
+  │    └─ Tab: Private Deploy          (API reference, one-click deploy)
+  └─ Hub UI                            (mapa de agentes, distrito, telemetría)
 
-- components/integrated-home.tsx
+API Routes (Next.js)
+  ├─ /api/protocol/x402/quote          GET  – crea quote de pago
+  ├─ /api/protocol/x402/settle         POST – liquida pago (+ passport gate opcional)
+  ├─ /api/protocol/passport/authorize  POST – verifica spend-cap ZK on-chain
+  ├─ /api/protocol/passport/status     GET  – lee attestation del agente
+  ├─ /api/protocol/reputation          GET/POST – sistema de reputación
+  ├─ /api/protocol/track8004           GET  – resolución ERC-8004
+  ├─ /api/stellar/balance              GET  – balance Stellar
+  ├─ /api/stellar/build-tx             POST – construye transacción
+  ├─ /api/stellar/submit-tx            POST – envía transacción firmada
+  └─ /api/stellar/fund                 POST – Friendbot testnet
 
-Componente Open-Stellar:
+Contratos Soroban (testnet)
+  ├─ AgentPassportValidator  CDNSZUNEWFCGSPWLPDSWTENR2WPHKC34RGZQG7RJA54OPGTZGVVRFYBA
+  └─ CircomGroth16Verifier   CCMKLYSRUH2HMA4UU6WLXWQXEY6KAH5AWB5BEVMJGNGC5GLGTVROLG4A
+```
 
-- components/open-stellar/open-stellar-hub.tsx
+---
 
-### 2. Capa Web3
+## Protocolos
 
-#### Track BNB (EVM)
+### x402 — HTTP payment gate
 
-- Stack: wagmi + viem
-- Conectores activos:
-  - injected (MetaMask)
-  - walletConnect (si NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID existe)
-- Red objetivo: BNB Smart Chain Testnet (chain 97)
-- Envio transacciones: useSendTransaction + waitForTransactionReceipt
+Cada llamada a un servicio de agente queda protegida por una microtransacción XLM. El flujo es:
 
-Archivos:
+1. Cliente solicita quote → `GET /api/protocol/x402/quote`
+2. Paga on-chain
+3. Envía evidencia de settlement → `POST /api/protocol/x402/settle`
+4. La API verifica y emite receipt
 
-- lib/wallet-config.ts
-- components/wallet/wallet-button.tsx
-- components/wallet/transaction-panel.tsx
+El settle acepta `agentId` opcional; si está presente, llama al gate de passport antes de liquidar. Requests sin `agentId` mantienen comportamiento original (retrocompatible).
 
-#### Track Stellar
+Archivos: [lib/protocols/x402.ts](lib/protocols/x402.ts), [app/api/protocol/x402/](app/api/protocol/x402/)
 
-- Stack: @stellar/freighter-api + @stellar/stellar-sdk
-- Wallet: Freighter
-- Red objetivo: Test SDF Network
-- Envio transacciones: TransactionBuilder + signTransaction + Horizon submit
+### Agent Passport (ZK) — capa de confianza zero-knowledge
 
-Archivos:
+Cada agente puede acuñar un **pasaporte Groth16** que prueba — sin revelar la identidad del dueño ni el saldo real — que está respaldado por un humano verificado y es solvente hasta su spend cap.
 
-- lib/stellar-utils.ts
-- components/wallet/wallet-button.tsx
-- components/wallet/transaction-panel.tsx
-- app/api/stellar/*
+Las cuatro invariantes on-chain:
+- Prueba Groth16 válida (verificada por CircomGroth16Verifier en Soroban)
+- Nullifier anti-replay (un pasaporte, un uso)
+- Membresía en el identity registry
+- Proof-of-funds para el spend cap declarado
 
-### 3. Capa de Agentes
+Flujo en el browser:
+1. Se genera un keypair efímero (`privateKey`, `agentId`)
+2. snarkjs calcula el witness y genera la prueba WASM local
+3. La prueba se envía al validador Soroban para attestation on-chain
+4. El x402 settle gate consulta el spend cap antes de cada pago
 
-Puede operar con modelos LLM distintos segun carga y complejidad:
+Archivos: [lib/passport/passport.ts](lib/passport/passport.ts), [lib/passport/validator-client.ts](lib/passport/validator-client.ts), [public/zk/](public/zk/), [components/admin/passport-panel.tsx](components/admin/passport-panel.tsx)
 
-- Router Agent (clasifica tarea)
-- Specialist EVM Agent
-- Specialist Stellar Agent
-- Ops/Support Agent
+Rutas API: [app/api/protocol/passport/](app/api/protocol/passport/)
 
-Skills recomendadas como servicios:
+### Track 8004 + Reputación
 
-- Risk Guard: analiza riesgo pre-transaccion
-- Tx Explainer: explica resultado on-chain
-- Policy Checker: valida reglas de entorno
-- Ops Assistant: diagnostica errores wallet/RPC
+Resolución de identidad de agentes siguiendo el estándar ERC-8004. Si la cadena no soporta 8004 nativo, el sistema hace fallback automático al motor de reputación en Stellar.
 
-## x402 y track 8004
+Archivos: [lib/protocols/track8004.ts](lib/protocols/track8004.ts), [lib/reputation/reputation-store.ts](lib/reputation/reputation-store.ts)
 
-### x402
+### Escrow
 
-Implementacion en:
+| Contrato | Red | Función |
+|----------|-----|---------|
+| [EscrowMilestone.sol](contracts/evm/EscrowMilestone.sol) | EVM | Escrow por hitos (createDeal, release, refund, raiseDispute) |
+| [X402ServicePaywall.sol](contracts/evm/X402ServicePaywall.sol) | EVM | Paywall x402 (settle402, hasPaid, withdraw) |
+| [escrow/src/lib.rs](contracts/stellar/escrow/src/lib.rs) | Soroban | Base funcional (create, release, dispute, get) |
 
-- lib/protocols/x402.ts
-- app/api/protocol/x402/quote/route.ts
-- app/api/protocol/x402/settle/route.ts
+---
 
-Flujo:
+## Admin Console
 
-1. Cliente pide quote x402 (respuesta tipo code 402)
-2. Cliente paga on-chain
-3. Cliente envia evidencia de settlement
-4. Sistema emite receipt
+Accesible en `/admin`. Tres tabs:
 
-### track 8004 + fallback
+### Orchestration Overview
 
-Implementacion en:
+Vista operativa del stack como SaaS: squads de agentes por distrito, telemetría de CPU/memoria, planes de suscripción (Starter $49/mo → Growth $249/mo → Command custom), uso mensual de requests y API key con scope completo.
 
-- lib/protocols/track8004.ts
-- app/api/protocol/track8004/route.ts
+### Agent Passport (ZK)
 
-Regla:
+Panel interactivo de 4 pasos:
+1. **Mint** — genera prueba Groth16 en el browser
+2. **Verify on-chain** — consulta attestation en Soroban testnet
+3. **Authorize x402** — gate de spend cap contra el validador
+4. **Replay attack demo** — demuestra que el nullifier bloquea reusos
 
-- Si no hay soporte 8004 en Stellar, el modo pasa automaticamente a reputation-fallback.
+Muestra contratos desplegados en testnet con links a stellar.expert.
 
-Sistema de reputacion:
+### Private Deploy
 
-- lib/reputation/reputation-store.ts
-- app/api/protocol/reputation/route.ts
-- contracts/stellar/REPUTATION_FALLBACK.md
+Para desarrolladores que quieren su propio nodo Open Stellar:
+- Guía de 3 pasos (Fork → Configure → Deploy)
+- Botón "Deploy to Vercel" de un click
+- Tabla completa de endpoints API con método y descripción
+- Variables de entorno requeridas
+- Snippet curl de test
 
-## Tecnologia de escrow
+---
 
-### EVM
+## Variables de entorno
 
-- contracts/evm/EscrowMilestone.sol
-  - createDeal
-  - release
-  - refund
-  - raiseDispute
+```env
+# WalletConnect Cloud project ID (requerido para conectores EVM)
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=abc123...
 
-- contracts/evm/X402ServicePaywall.sol
-  - settle402
-  - hasPaid
-  - withdraw
+# URL pública del deployment (opcional, usado en metadata)
+NEXT_PUBLIC_APP_URL=https://tu-instancia.vercel.app
+```
 
-### Stellar (Soroban base)
+Obtener WalletConnect project ID en [cloud.walletconnect.com](https://cloud.walletconnect.com).
 
-- contracts/stellar/escrow/src/lib.rs
-  - create
-  - release
-  - dispute
-  - get
+---
 
-Nota: el contrato Soroban es base funcional para evolucionar a transferencias tokenizadas/asset-based.
-
-## Refactor de estructura
-
-Nuevas carpetas agregadas:
-
-- components/open-stellar/
-- lib/protocols/
-- lib/reputation/
-- contracts/evm/
-- contracts/stellar/escrow/
-- app/api/protocol/
-
-Objetivo del refactor:
-
-- Separar UI, capa Web3, capa de protocolos y contratos
-- Facilitar mantenimiento por dominio funcional
-
-## Instalacion
-
-1. Clonar
+## Instalación y desarrollo local
 
 ```bash
 git clone https://github.com/leocagli/Open-Stellar.git
 cd Open-Stellar
-```
-
-2. Dependencias
-
-```bash
-pnpm install
-```
-
-Si no tienes pnpm, puedes usar npm:
-
-```bash
 npm install
 ```
 
-3. Variables de entorno
-
-Crear .env.local:
+Crear `.env.local`:
 
 ```env
-NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=tu_project_id_walletconnect
+NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID=tu_project_id
 ```
 
-4. Desarrollo
+Iniciar dev server:
 
 ```bash
-pnpm dev
+npm run dev
 ```
 
-## Chequeo y bugs
+> El script usa `next dev --webpack`. La flag `--webpack` es obligatoria porque snarkjs requiere configuración webpack y Next.js 16 usa Turbopack por defecto, que ignora `next.config.mjs`.
 
-Checklist aplicada en esta iteracion:
-
-- Revisada coherencia de conectores BNB en UI
-- Revisado fallback cuando WalletConnect no esta configurado
-- Revisado flujo Freighter y red testnet
-- Revisado tipado de nuevos endpoints protocol
-- Revisada integracion del frontend Open-Stellar
-
-Comando recomendado de verificacion local:
+Build de producción:
 
 ```bash
-pnpm lint
-pnpm build
-```
-
-Con npm:
-
-```bash
-npm run lint
 npm run build
 ```
 
-Si aparecen conflictos de node_modules en el panel de errores, ignorar y validar solo archivos del proyecto.
+---
 
-## Rutas API nuevas
+## Deploy a Vercel
 
-- POST /api/protocol/x402/quote
-- POST /api/protocol/x402/settle
-- GET /api/protocol/track8004?chain=stellar
-- GET /api/protocol/reputation?actorId=agent-1
-- POST /api/protocol/reputation
+El repositorio incluye `vercel.json` que fuerza:
 
-## Deploy de contratos (EVM + Soroban)
+```json
+{
+  "buildCommand": "next build --webpack",
+  "installCommand": "npm install",
+  "framework": "nextjs"
+}
+```
 
-Guia extendida:
+Pasos:
+1. Fork en GitHub
+2. Importar en [vercel.com/new](https://vercel.com/new)
+3. Agregar `NEXT_PUBLIC_WALLETCONNECT_PROJECT_ID` en las variables de entorno del proyecto
+4. Deploy — Vercel detecta Next.js y usa el buildCommand del `vercel.json`
 
-- DEPLOY_GUIDE.md
+O usar el botón de un click al inicio de este README.
 
-Scripts de ayuda:
+---
+
+## Contratos desplegados (Stellar testnet)
+
+| Contrato | ID |
+|----------|----|
+| AgentPassportValidator | `CDNSZUNEWFCGSPWLPDSWTENR2WPHKC34RGZQG7RJA54OPGTZGVVRFYBA` |
+| CircomGroth16Verifier | `CCMKLYSRUH2HMA4UU6WLXWQXEY6KAH5AWB5BEVMJGNGC5GLGTVROLG4A` |
+
+Explorar en [stellar.expert/explorer/testnet](https://stellar.expert/explorer/testnet).
+
+---
+
+## Estructura de archivos relevantes
+
+```
+app/
+  api/
+    protocol/
+      x402/               x402 quote + settle
+      passport/           ZK passport authorize + status
+      reputation/         motor de reputación
+      track8004/          resolución ERC-8004
+    stellar/              balance, build-tx, submit-tx, fund
+
+components/
+  admin/
+    admin-console.tsx     console multi-tab
+    passport-panel.tsx    ZK passport UI
+  open-stellar/           hub principal
+  wallet/                 botones y panel de transacción
+
+lib/
+  passport/
+    passport.ts           pipeline ZK completo
+    validator-client.ts   bindings Soroban (stellar-sdk v16)
+    snarkjs.d.ts          tipos snarkjs
+  protocols/
+    x402.ts               x402 quote/settle/registry
+    track8004.ts          resolución 8004
+  reputation/
+    reputation-store.ts   store de reputación
+
+public/zk/               artifacts circom (WASM + zkey + vk)
+
+contracts/
+  evm/                    Solidity (EscrowMilestone, X402ServicePaywall)
+  stellar/escrow/         Soroban base escrow (Rust)
+
+vercel.json              build config para Vercel
+```
+
+---
+
+## Repositorios relacionados
+
+- [open-stellar-passport](https://github.com/leocagli/open-stellar-passport) — fuente original del sistema ZK passport (Vite standalone), portado a este repo en `lib/passport/`
+
+---
+
+## Scripts de deploy de contratos
 
 ```bash
-npm run deploy:evm:guide
-npm run deploy:soroban:guide
+npm run deploy:evm:guide      # guía interactiva EVM
+npm run deploy:soroban:guide  # guía interactiva Soroban
 ```
+
+---
 
 ## Licencia
 
