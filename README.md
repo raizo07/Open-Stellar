@@ -37,6 +37,9 @@ API Routes (Next.js)
   ├─ /api/protocol/passport/status     GET  – lee attestation del agente
   ├─ /api/protocol/reputation          GET/POST – sistema de reputación
   ├─ /api/protocol/track8004           GET  – resolución ERC-8004
+  ├─ /api/agents/:id/heartbeat         POST – heartbeat runtime del agente
+  ├─ /api/agents/:id/health            GET  – estado healthy/stale/offline
+  ├─ /api/cron/health-check            GET  – marca agentes offline y dispara alertas
   ├─ /api/stellar/balance              GET  – balance Stellar
   ├─ /api/stellar/build-tx             POST – construye transacción
   ├─ /api/stellar/submit-tx            POST – envía transacción firmada
@@ -89,6 +92,14 @@ Rutas API: [app/api/protocol/passport/](app/api/protocol/passport/)
 Resolución de identidad de agentes siguiendo el estándar ERC-8004. Si la cadena no soporta 8004 nativo, el sistema hace fallback automático al motor de reputación en Stellar.
 
 Archivos: [lib/protocols/track8004.ts](lib/protocols/track8004.ts), [lib/reputation/reputation-store.ts](lib/reputation/reputation-store.ts)
+
+### Agent Health Monitoring
+
+Cada agente puede publicar un heartbeat cada 15 segundos en `POST /api/agents/:id/heartbeat` con `status`, `cpu`, `memory`, `currentTask` y `autoRestart`. `GET /api/agents/:id/health` devuelve un snapshot con `healthy`, `stale` u `offline`, los missed heartbeats, uptime y ultimo heartbeat observado.
+
+La ruta `GET /api/cron/health-check` esta pensada para Vercel Cron. Marca offline a los agentes sin heartbeat por mas de 45 segundos, registra eventos `agent.status`, solicita auto-restart cuando `autoRestart` esta activo, y eleva alertas `error` cuando un agente lleva mas de 5 minutos offline. Vercel ejecuta la ruta cada minuto mediante `vercel.json`; entornos self-hosted pueden llamarla cada 30 segundos.
+
+Archivos: [lib/agents/agent-health-store.ts](lib/agents/agent-health-store.ts), [app/api/agents/](app/api/agents/), [app/api/cron/health-check/](app/api/cron/health-check/)
 
 ### Escrow
 
