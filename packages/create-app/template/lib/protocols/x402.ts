@@ -1,3 +1,5 @@
+import { randomBytes } from 'node:crypto'
+
 export type SettlementChain = 'bnb' | 'stellar'
 
 export interface X402QuoteRequest {
@@ -48,5 +50,5 @@ export function createX402Quote(input: X402QuoteRequest): X402Quote {
 }
 
 function cryptoRandomId(): string {
-  return Math.random().toString(36).slice(2, 10)
+  return randomBytes(4).toString('hex')
 }

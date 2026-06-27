@@ -25,7 +25,7 @@ export async function GET(req: Request) {
     ok: true,
     agent: myFirstAgent.id,
     service: myFirstAgent.serviceId,
-    message: 'x402 gate passed — service response',
+    message: 'x402 gate passed - service response',
     paymentRef,
   })
 }
